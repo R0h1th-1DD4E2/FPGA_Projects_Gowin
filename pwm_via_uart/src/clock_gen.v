@@ -23,8 +23,10 @@ module clock_gen (
     reg [$clog2(PWM_SCALAR):0] pwm_counter;
 
     always @(posedge clk_50mhz or posedge rst) begin
-        if (rst)
+        if (rst) begin
             uart_counter <= 'b0;
+            clk_uart <= 'b0;
+        end
         else if (uart_counter == UART_DIVIDER - 1) begin
             uart_counter <= 'b0;
             clk_uart <= ~clk_uart;
@@ -35,8 +37,10 @@ module clock_gen (
     end
 
     always @(posedge clk_50mhz or posedge rst) begin
-        if (rst)
-            pwm_counter <= 'b0;
+        if (rst) begin
+           pwm_counter <= 'b0;
+           clk_pwm <= 'b0; 
+        end
         else if (pwm_counter == PWM_SCALAR - 1) begin
             pwm_counter <= 'b0;
             clk_pwm <= ~clk_pwm;
