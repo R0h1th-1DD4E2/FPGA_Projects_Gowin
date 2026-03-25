@@ -28,7 +28,6 @@ module uart_rx (
 
     always @(posedge clk_uart or posedge rst) begin
         if (rst) begin
-            next_state <= IDLE;
             cur_state <= IDLE;
         end
         else
@@ -100,7 +99,11 @@ module uart_rx (
                 sample[oversampling_counter] <= uart_rx;
             end
             default: begin
-                default_case
+                rx_done <= 'b0;
+                data <= 'b0;
+                sample <= 'b0;
+                oversampling_counter <= 'b0;
+                bit_counter <= 'b0;
             end
         endcase
     end
