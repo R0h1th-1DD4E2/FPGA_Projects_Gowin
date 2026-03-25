@@ -19,7 +19,6 @@ module pwm_gen (
 
     always @(posedge pwm_clk or posedge rst) begin
         if (rst) begin
-            counter <= 'b0;
             pwm_out <= 'b0;
             threshold <= 'b0;
             data_rcv <= 'b0;
@@ -39,8 +38,15 @@ module pwm_gen (
             else begin
                 pwm_out <= 1'b0;
             end
+        end
+    end
 
-            counter <= counter + 1'b1;
+    always @(posedge pwm_clk or posedge rst) begin
+        if (rst) begin
+            counter <= 'b0;
+        end
+        else begin
+            counter <= (data_en) ? 'b0 : counter + 1'b1;
         end
     end
 
