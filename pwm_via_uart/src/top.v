@@ -42,3 +42,5 @@ module top (
         .pwm_out(pwm_out),
         .data_rcv(data_rcv)
     );
+
+endmodule
