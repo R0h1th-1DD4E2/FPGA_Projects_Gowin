@@ -27,6 +27,7 @@ module top (
     );
 
     uart_rx uart_receiver (
+        .clk_uart(clk_uart),
         .uart_rx(uart_rx),
         .rst(rst),
         .data(data),
