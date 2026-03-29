@@ -1,2 +1,4 @@
 impl/
 output/
+*.vcd
+*.out

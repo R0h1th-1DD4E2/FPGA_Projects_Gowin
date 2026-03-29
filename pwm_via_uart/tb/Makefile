@@ -1,4 +1,4 @@
-TESTBENCHES = pwm_gen
+TESTBENCHES = pwm_gen uart_rx
 
 all: $(TESTBENCHES)
 
@@ -6,7 +6,7 @@ $(TESTBENCHES):
 	@echo "Running testbench: $@"
 	mkdir -p output
 	iverilog -o output/$@.out $@_tb.v ../src/$@.v
-	./output/$@.out
+	cd output && vvp $@.out
 	@echo "Testbench $@ completed."
 
 clean:

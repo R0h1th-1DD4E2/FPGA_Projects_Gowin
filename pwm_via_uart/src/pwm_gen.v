@@ -46,7 +46,7 @@ module pwm_gen (
             counter <= 'b0;
         end
         else begin
-            counter <= (data_en) ? 'b0 : counter + 1'b1;
+            counter <= (data_en) ? 8'b0 : counter + 8'b1;
         end
     end
 
