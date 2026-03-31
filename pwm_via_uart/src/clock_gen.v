@@ -12,10 +12,10 @@ module clock_gen (
 );
 
     // UART: Divider = F_clk / (Baud * Oversample) = 50MHz / (9600 * 8)
-    localparam UART_DIVIDER = 651; 
+    localparam UART_DIVIDER = 326; 
 
     // PWM: Scalar = F_clk / (F_cycle * 2^n) = 50MHz / (100 * 256)
-    localparam PWM_SCALAR = 1953;
+    localparam PWM_SCALAR = 977;
 
     // why not $clog2(UART_DIVIDER) - 1? 
     // need 10 bits which is 9:0 and not 8:0
