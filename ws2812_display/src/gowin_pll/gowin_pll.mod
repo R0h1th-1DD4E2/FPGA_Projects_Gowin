@@ -7,7 +7,6 @@
 
 -mod_name Gowin_PLL_MOD
 -file_name gowin_pll_mod
--path /home/ronix/Documents/gowin_project/ws2812_display/src/gowin_pll/
 -type PLL_ADV
 -file_type vlg
 -ssc false
