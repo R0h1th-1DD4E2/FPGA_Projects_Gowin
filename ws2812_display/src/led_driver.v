@@ -19,14 +19,19 @@ reg [23:0] pix_buf0, pix_buf1;
 reg [4:0] bit_cnt;
 reg pix_sel;
 reg [2:0] next_state, cur_state;
-reg frame_pending;
+reg frame_end_latch;
 reg buf0_valid, buf1_valid;
+reg [9:0] timer_cnt;
+reg [4:0] t_h_cnt, t_l_cnt; // TODO: kept an extra bit for overflow, will be tested and removed 
 
 wire buf_ready;
 wire [23:0] buffer_out;
 wire cur_bit, next_bit;
 
-localparam RESET=2'b00, SEND_H=2'b01, SEND_L=2'b11, HOLD_L=2'b10
+localparam RESET=2'b00, SEND_H=2'b01, SEND_L=2'b11, HOLD_L=2'b10;
+
+// Clock period is 20Mhz => 50ns, Hence the counts
+localparam T0H = 7, T1H = 14, T0L = 16, T1L = 12, RES = 1023;
 
 // Valid Ready handshake 
 // sticky bit to know if buffer ready after reset 
@@ -69,11 +74,11 @@ end
 // Latch incoming frame_done pulse
 always @(posedge clk or posedge rst) begin
     if (rst)
-        frame_pending <= 1'b0;
+        frame_end_latch <= 1'b0;
     else if (frame_done)
-        frame_pending <= 1'b1;
+        frame_end_latch <= 1'b1;
     else if (cur_state == START_FRAME)
-        frame_pending <= 1'b0;
+        frame_end_latch <= 1'b0;
 end
 
 // state update logic
@@ -84,8 +89,33 @@ always @(posedge clk or posedge rst) begin
         cur_state <= next_state;
 end
 
-wire cur_bit = buffer_out[23 - bit_cnt]; // MSB first
-wire next_bit = buffer_out[23 - (bit_cnt + 1)]; // has overflow bit_cnt == 23, but at that situation, change pix_sel
+wire cur_bit = buffer_out[bit_cnt]; // MSB first, bit_cnt is reverse counter
+wire next_bit = buffer_out[bit_cnt - 1)]; // has overflow bit_cnt after 0, but at that situation, change pix_sel
+
+// Based on cur_bit the count for T_H and T_L
+always @(*) begin
+    if (cur_bit) begin
+        t_h_cnt <= T1H;
+        t_l_cnt <= T1L;
+    end
+    else begin
+        t_h_cnt <= T0H;
+        t_l_cnt <= T0L;
+    end
+end
+
+always @(posedge clk or posedge rst) begin
+    if (rst)
+        timer_cnt <= 0;
+
+    // reset timer whenever state changes
+    else if (cur_state != next_state)
+        timer_cnt <= 0;
+
+    // count while staying inside same state
+    else
+        timer_cnt <= timer_cnt + 1;
+end
 
 // next state logic
 always @(*) begin
@@ -94,9 +124,18 @@ always @(*) begin
     else
         case (cur_state)
             RESET: next_state <= (buf_ready) ? SEND_H : RESET;
-            SEND_H: next_state <= SEND_L;
-            SEND_L: next_state <= (frame_pending) ? HOLD_L : RESET;
-            HOLD_L: next_state <= RESET;
+            SEND_H: next_state <= (timer_cnt == t_h_cnt) ? SEND_L : SEND_H;
+            SEND_L: begin
+                if (timer_cnt == t_l_cnt) begin
+                    if (bit_cnt == 23)
+                        next_state <= (frame_end_latch) ? HOLD_L : SEND_H; 
+                    else
+                        next_state <= SEND_H;
+                end
+                else
+                    next_state <= SEND_L;
+            end
+            HOLD_L: next_state <= (timer_cnt == RES) ? RESET : HOLD_L;
         endcase
 end
 
