@@ -34,17 +34,30 @@ localparam RESET=2'b00, SEND_H=2'b01, SEND_L=2'b11, HOLD_L=2'b10;
 localparam T0H = 7, T1H = 14, T0L = 16, T1L = 12, RES = 1023;
 
 // Valid Ready handshake 
-// sticky bit to know if buffer ready after reset 
+// valid flag to know if buffer ready after reset, read and frame done
 always @(posedge clk or posedge rst) begin
     if (rst) begin
         buf0_valid <= 1'b0;    
         buf1_valid <= 1'b0;   
     end
-    else if (ready && valid) // when buf_ready != 1 and after first store
+    // when buf_ready != 1 and after first store
+    else if (ready && valid)
         case (pix_sel)
                 1'b0 : buf0_valid <= 1'b1;
                 1'b1 : buf1_valid <= 1'b1; 
         endcase
+    // reset of valid flags when one pixel is done
+    else if (cur_state == SEND_L && timer_cnt == t_l_cnt && bit_cnt == 23) begin
+        case (!pix_sel)
+                1'b0 : buf0_valid <= 1'b0;
+                1'b1 : buf1_valid <= 1'b0; 
+        endcase
+    end
+    // reset of buffer valid flags when frame is done
+    else if (frame_done_latch) begin
+        buf0_valid <= 1'b0;    
+        buf1_valid <= 1'b0;   
+    end
     else begin
        buf0_valid <= buf0_valid;
        buf1_valid <= buf1_valid; 
@@ -54,6 +67,7 @@ end
 assign buf_ready = buf0_valid && buf1_valid;
 assign buffer_out = (!pix_sel ) ? pix_buf0 : pix_buf1;
 
+// store buffer
 always @(posedge clk or posedge rst) begin
     if (rst) begin
         pix_buf0 <= 24'b0;
@@ -77,7 +91,7 @@ always @(posedge clk or posedge rst) begin
         frame_end_latch <= 1'b0;
     else if (frame_done)
         frame_end_latch <= 1'b1;
-    else if (cur_state == START_FRAME)
+    else if (cur_state == RESET)
         frame_end_latch <= 1'b0;
 end
 
@@ -90,7 +104,7 @@ always @(posedge clk or posedge rst) begin
 end
 
 wire cur_bit = buffer_out[bit_cnt]; // MSB first, bit_cnt is reverse counter
-wire next_bit = buffer_out[bit_cnt - 1)]; // has overflow bit_cnt after 0, but at that situation, change pix_sel
+wire next_bit = buffer_out[bit_cnt - 1]; // has overflow bit_cnt after 0, but at that situation, change pix_sel
 
 // Based on cur_bit the count for T_H and T_L
 always @(*) begin
