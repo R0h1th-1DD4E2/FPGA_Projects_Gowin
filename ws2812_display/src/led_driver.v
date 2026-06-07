@@ -15,94 +15,121 @@ module led_driver(
     output reg ready
 );
 
+// -------------------------
+// Registers
+// -------------------------
 reg [23:0] pix_buf0, pix_buf1;
-reg [4:0] bit_cnt;
-reg pix_sel;
-reg [2:0] next_state, cur_state;
-reg frame_end_latch;
-reg buf0_valid, buf1_valid;
-reg [9:0] timer_cnt;
-reg [4:0] t_h_cnt, t_l_cnt; // TODO: kept an extra bit for overflow, will be tested and removed 
+reg [4:0]  bit_cnt;
+reg [2:0]  next_state, cur_state;
+reg        frame_end_latch;
+reg [9:0]  timer_cnt;
+reg [4:0]  t_h_cnt, t_l_cnt;   // TODO: kept an extra bit for overflow, will be tested and removed
+reg [1:0]  fill_cnt;
+reg        wr_ptr, rd_ptr;
 
-wire buf_ready;
+// -------------------------
+// Wires
+// -------------------------
+wire        full, empty;
+wire        buf_ready, buf_avlb;
 wire [23:0] buffer_out;
-wire cur_bit;
+wire        cur_bit;
+wire        pixel_done;
 
+// -------------------------
+// State encoding
+// -------------------------
 localparam RESET=2'b00, SEND_H=2'b01, SEND_L=2'b11, HOLD_L=2'b10;
 
-// Clock period is 20Mhz => 50ns, Hence the counts
+// Clock period is 20MHz => 50ns, Hence the counts
 localparam T0H = 7, T1H = 14, T0L = 16, T1L = 12, RES = 1023;
 
-// Valid Ready handshake 
-// valid flag to know if buffer ready after reset, read and frame done
-always @(posedge clk or posedge rst) begin
-    if (rst) begin
-        buf0_valid <= 1'b0;    
-        buf1_valid <= 1'b0;   
-    end
-    // when buf_ready != 1 and after first store
-    else if (ready && valid)
-        case (pix_sel)
-                1'b0 : buf0_valid <= 1'b1;
-                1'b1 : buf1_valid <= 1'b1; 
-        endcase
-    // reset of valid flags when one pixel is done
-    else if (cur_state == SEND_L && timer_cnt == t_l_cnt && bit_cnt == 0) begin
-        case (!pix_sel)
-                1'b0 : buf0_valid <= 1'b0;
-                1'b1 : buf1_valid <= 1'b0; 
-        endcase
-    end
-    // reset of buffer valid flags when frame is done
-    else if (frame_end_latch) begin
-        buf0_valid <= 1'b0;    
-        buf1_valid <= 1'b0;   
-    end
-    else begin
-       buf0_valid <= buf0_valid;
-       buf1_valid <= buf1_valid; 
-    end
-end
+// -------------------------
+// FIFO — full/empty flags
+// -------------------------
+assign full      = (fill_cnt == 2'd2);
+assign empty     = (fill_cnt == 2'd0);
+assign buf_ready = full;
+assign buf_avlb  = !empty;
 
-assign buf_ready = buf0_valid && buf1_valid;
-assign buffer_out = (!pix_sel) ? pix_buf0 : pix_buf1;
+// -------------------------
+// Buffer read mux
+// -------------------------
+assign buffer_out = rd_ptr ? pix_buf1 : pix_buf0;
+assign cur_bit    = buffer_out[bit_cnt];   // MSB first, bit_cnt is reverse counter
 
-// store buffer
+// -------------------------
+// Pixel done strobe
+// -------------------------
+assign pixel_done = (cur_state == SEND_L) && (timer_cnt == t_l_cnt) && (bit_cnt == 0);
+
+// -------------------------
+// Buffer write
+// -------------------------
 always @(posedge clk or posedge rst) begin
     if (rst) begin
         pix_buf0 <= 24'b0;
         pix_buf1 <= 24'b0;
-        pix_sel <= 1'b0;
-        ready <= 1'b1;
+    end else if (valid && ready) begin
+        case (wr_ptr)
+            1'b0: pix_buf0 <= pixel_val;
+            1'b1: pix_buf1 <= pixel_val;
+        endcase
     end
-    else begin
-        if (valid && ready) begin
-            case (pix_sel)
-                1'b0 : pix_buf0 <= pixel_val;
-                1'b1 : pix_buf1 <= pixel_val; 
-            endcase
-            pix_sel <= ~pix_sel;
-        end
-        if (!buf_ready) begin
-            ready <= 1'b1;
-        end
-        else begin
-            ready <= 1'b0;
-        end
-    end 
 end
 
+// -------------------------
+// FIFO control — fill_cnt, pointers, ready
+// -------------------------
+always @(posedge clk or posedge rst) begin
+    if (rst) begin
+        fill_cnt <= 2'd0;
+        wr_ptr    <= 1'b0;
+        rd_ptr    <= 1'b0;
+        ready     <= 1'b1;
+    end else begin
+
+        // fill_cnt counter
+        case ({valid && ready, pixel_done})
+            2'b10:   fill_cnt <= fill_cnt + 1'b1;
+            2'b01:   fill_cnt <= fill_cnt - 1'b1;
+            default: fill_cnt <= fill_cnt;
+        endcase
+
+        // Write pointer
+        if (valid && ready)
+            wr_ptr <= ~wr_ptr;
+
+        // Read pointer
+        if (pixel_done)
+            rd_ptr <= ~rd_ptr;
+
+        // Frame flush — on HOLD_L entry only
+        if (cur_state != HOLD_L && next_state == HOLD_L) begin
+            fill_cnt <= 2'd0;
+            wr_ptr    <= 1'b0;
+            rd_ptr    <= 1'b0;
+        end
+
+        ready <= !full;
+    end
+end
+
+// -------------------------
 // Latch incoming frame_done pulse
+// -------------------------
 always @(posedge clk or posedge rst) begin
     if (rst)
         frame_end_latch <= 1'b0;
     else if (frame_done)
         frame_end_latch <= 1'b1;
-    else if (cur_state == RESET)
+    else if (cur_state == HOLD_L)
         frame_end_latch <= 1'b0;
 end
 
-// state update logic
+// -------------------------
+// State update
+// -------------------------
 always @(posedge clk or posedge rst) begin
     if (rst)
         cur_state <= RESET;
@@ -110,57 +137,58 @@ always @(posedge clk or posedge rst) begin
         cur_state <= next_state;
 end
 
-assign cur_bit = buffer_out[bit_cnt]; // MSB first, bit_cnt is reverse counter
-
-// Based on cur_bit the count for T_H and T_L
+// -------------------------
+// T_H / T_L counts based on current bit
+// -------------------------
 always @(*) begin
     if (cur_bit) begin
-        t_h_cnt = T1H;
-        t_l_cnt = T1L;
-    end
-    else begin
-        t_h_cnt = T0H;
-        t_l_cnt = T0L;
+        t_h_cnt = T1H - 1;
+        t_l_cnt = T1L - 1;
+    end else begin
+        t_h_cnt = T0H - 1;
+        t_l_cnt = T0L - 1;
     end
 end
 
+// -------------------------
+// Timer — resets on state change
+// -------------------------
 always @(posedge clk or posedge rst) begin
     if (rst)
         timer_cnt <= 0;
-
-    // reset timer whenever state changes
     else if (cur_state != next_state)
         timer_cnt <= 0;
-
-    // count while staying inside same state
     else
         timer_cnt <= timer_cnt + 1;
 end
 
-// next state logic
+// -------------------------
+// Next state logic
+// -------------------------
 always @(*) begin
     if (rst)
         next_state = RESET;
     else
         case (cur_state)
-            RESET: next_state = (buf_ready) ? SEND_H : RESET;
+            RESET:  next_state = (buf_ready) ? SEND_H : RESET;
             SEND_H: next_state = (timer_cnt == t_h_cnt) ? SEND_L : SEND_H;
             SEND_L: begin
                 if (timer_cnt == t_l_cnt) begin
                     if (bit_cnt == 0)
-                        next_state = (frame_end_latch) ? HOLD_L : SEND_H; 
+                        next_state = (frame_end_latch || !buf_avlb) ? HOLD_L : SEND_H;
                     else
                         next_state = SEND_H;
-                end
-                else
+                end else
                     next_state = SEND_L;
             end
-            HOLD_L: next_state = (timer_cnt == RES) ? RESET : HOLD_L;
+            HOLD_L:  next_state = (timer_cnt == RES) ? RESET : HOLD_L;
             default: next_state = RESET;
         endcase
 end
 
-// bit counter
+// -------------------------
+// Bit counter
+// -------------------------
 always @(posedge clk or posedge rst) begin
     if (rst)
         bit_cnt <= 23;
@@ -172,7 +200,9 @@ always @(posedge clk or posedge rst) begin
     end
 end
 
-// output logic
+// -------------------------
+// Output logic
+// -------------------------
 always @(posedge clk or posedge rst) begin
     if (rst)
         dout <= 1'b0;
