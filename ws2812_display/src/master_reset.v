@@ -8,6 +8,6 @@ module master_reset(
     output reset
 );
 
-assign reset = reset_ext | ~pll_lock;
+assign reset = reset_ext; //| ~pll_lock;
 
 endmodule

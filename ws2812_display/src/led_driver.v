@@ -20,9 +20,9 @@ module led_driver(
 // -------------------------
 reg [23:0] pix_buf0, pix_buf1;
 reg [4:0]  bit_cnt;
-reg [2:0]  next_state, cur_state;
+reg [1:0]  next_state, cur_state;
 reg        frame_end_latch;
-reg [9:0]  timer_cnt;
+reg [10:0]  timer_cnt;
 reg [4:0]  t_h_cnt, t_l_cnt;   // TODO: kept an extra bit for overflow, will be tested and removed
 reg [1:0]  fill_cnt;
 reg        wr_ptr, rd_ptr;
@@ -42,7 +42,7 @@ wire        pixel_done;
 localparam RESET=2'b00, SEND_H=2'b01, SEND_L=2'b11, HOLD_L=2'b10;
 
 // Clock period is 20MHz => 50ns, Hence the counts
-localparam T0H = 7, T1H = 14, T0L = 16, T1L = 12, RES = 1023;
+localparam T0H = 7, T1H = 14, T0L = 16, T1L = 12, RES = 2047;
 
 // -------------------------
 // FIFO — full/empty flags
@@ -159,7 +159,7 @@ always @(posedge clk or posedge rst) begin
     else if (cur_state != next_state)
         timer_cnt <= 0;
     else
-        timer_cnt <= timer_cnt + 1;
+        timer_cnt <= timer_cnt + 1'b1;
 end
 
 // -------------------------
@@ -196,7 +196,7 @@ always @(posedge clk or posedge rst) begin
         if (bit_cnt == 0)
             bit_cnt <= 23;
         else
-            bit_cnt <= bit_cnt - 1;
+            bit_cnt <= bit_cnt - 1'b1;
     end
 end
 

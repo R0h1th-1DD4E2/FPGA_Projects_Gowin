@@ -185,58 +185,87 @@ task automatic wait_clk;
     end
 endtask
 
-// send_pixel — waits for ready then presents pixel for one cycle
-// returns timed_out if ready never comes within PIX_TIMEOUT_CYC
+// send_pixel — proper valid/ready handshake
+//
+// Protocol:
+//   1. Assert valid=1 and drive pixel_val immediately (don't pre-wait).
+//   2. Hold valid=1 and pixel_val STABLE every cycle until a posedge clk
+//      where ready=1 is sampled — that is the accepted transfer.
+//   3. Deassert valid the cycle after acceptance.
+//
+// This mirrors a real producer: data is presented and held stable;
+// the consumer (DUT) controls when it is taken via ready.
+// Pre-checking ready then driving valid misses cases where ready drops
+// between the check and the drive cycle.
 task automatic send_pixel;
     input  [23:0] pix;
     output reg    timed_out;
-    reg to;
+    integer k;
     begin
-        wait_ready_timeout(PIX_TIMEOUT_CYC, to);
-        timed_out = to;
-        if (!to) begin
-            valid     <= 1'b1;
-            pixel_val <= pix;
+        timed_out = 1'b0;
+        // present data immediately after negedge so DUT sees stable data at posedge
+        @(negedge clk);
+        valid     = 1'b1;
+        pixel_val = pix;
+        // hold valid+data until DUT acknowledges (ready=1 at posedge)
+        for (k = 0; k < PIX_TIMEOUT_CYC; k = k + 1) begin
             @(posedge clk);
-            valid     <= 1'b0;
-            pixel_val <= 24'b0;
+            if (ready === 1'b1) begin
+                // handshake complete — deassert after negedge for clean edges
+                @(negedge clk);
+                valid     = 1'b0;
+                pixel_val = 24'b0;
+                disable send_pixel;
+            end
         end
+        // timed out — deassert and flag
+        @(negedge clk);
+        valid     = 1'b0;
+        pixel_val = 24'b0;
+        timed_out = 1'b1;
     end
 endtask
 
-// send_pixel_no_wait — presents pixel regardless of ready (overflow test)
+// send_pixel_no_wait — presents pixel regardless of ready (overflow / back-pressure test)
+// Drives valid=1 for exactly one clock cycle with no regard for ready.
+// Used to verify DUT ignores the transfer when ready=0.
 task automatic send_pixel_no_wait;
     input [23:0] pix;
     begin
-        @(posedge clk);
-        valid     <= 1'b1;
-        pixel_val <= pix;
-        @(posedge clk);
-        valid     <= 1'b0;
-        pixel_val <= 24'b0;
+        @(negedge clk);         // drive after negedge so DUT samples at next posedge
+        valid     = 1'b1;
+        pixel_val = pix;
+        @(posedge clk);         // DUT samples here — ready=0 so transfer must be ignored
+        @(negedge clk);
+        valid     = 1'b0;
+        pixel_val = 24'b0;
     end
 endtask
 
 task automatic pulse_frame_done;
     begin
-        @(posedge clk);
-        frame_done <= 1'b1;
-        @(posedge clk);
-        frame_done <= 1'b0;
+        @(negedge clk);
+        frame_done = 1'b1;
+        @(posedge clk);     // DUT latches on this edge
+        @(negedge clk);
+        frame_done = 1'b0;
     end
 endtask
 
-// do_reset — full synchronous reset sequence
+// do_reset — full reset sequence
+// Drives all inputs to safe idle state, holds reset for 4 cycles,
+// then deasserts and waits one more cycle for SM to settle in RESET state.
 task automatic do_reset;
     begin
+        @(negedge clk);
         rst        = 1'b1;
         valid      = 1'b0;
         frame_done = 1'b0;
         pixel_val  = 24'b0;
         wait_clk(4);
-        @(posedge clk);
+        @(negedge clk);
         rst = 1'b0;
-        @(posedge clk);
+        wait_clk(2);        // two settle cycles — SM lands in RESET, ready=1
     end
 endtask
 
