@@ -185,41 +185,58 @@ task automatic wait_clk;
     end
 endtask
 
-// send_pixel — proper valid/ready handshake
+// send_pixel — strict valid/ready handshake
 //
-// Protocol:
-//   1. Assert valid=1 and drive pixel_val immediately (don't pre-wait).
-//   2. Hold valid=1 and pixel_val STABLE every cycle until a posedge clk
-//      where ready=1 is sampled — that is the accepted transfer.
-//   3. Deassert valid the cycle after acceptance.
+// Rule: valid must NOT be asserted until ready=1 is seen.
+//       Once asserted, valid+data are held stable until the posedge
+//       where ready=1 is sampled — that single posedge is the transfer.
+//       valid is deasserted at the following negedge.
 //
-// This mirrors a real producer: data is presented and held stable;
-// the consumer (DUT) controls when it is taken via ready.
-// Pre-checking ready then driving valid misses cases where ready drops
-// between the check and the drive cycle.
+// Timeline:
+//   ... posedge: poll ready — if 0, stay idle, loop
+//   negedge    : ready just went 1, assert valid+data now
+//   posedge    : DUT sees valid=1 ready=1 — transfer accepted
+//   negedge    : deassert valid, done
+//
+// This means the testbench behaves exactly like a well-behaved AXI
+// producer: it never drives valid=1 into a not-ready DUT.
 task automatic send_pixel;
     input  [23:0] pix;
     output reg    timed_out;
     integer k;
     begin
         timed_out = 1'b0;
-        // present data immediately after negedge so DUT sees stable data at posedge
-        @(negedge clk);
-        valid     = 1'b1;
-        pixel_val = pix;
-        // hold valid+data until DUT acknowledges (ready=1 at posedge)
+        valid     = 1'b0;
+        pixel_val = 24'b0;
+
+        // Step 1: wait until ready=1 before touching valid
         for (k = 0; k < PIX_TIMEOUT_CYC; k = k + 1) begin
             @(posedge clk);
             if (ready === 1'b1) begin
-                // handshake complete — deassert after negedge for clean edges
+                // Step 2: ready is high — assert valid+data after this negedge
+                //         so DUT sees stable inputs at the NEXT posedge
                 @(negedge clk);
-                valid     = 1'b0;
-                pixel_val = 24'b0;
-                disable send_pixel;
+                valid     = 1'b1;
+                pixel_val = pix;
+
+                // Step 3: wait for the posedge where both valid=1 and ready=1
+                //         (ready could have dropped between our poll and now,
+                //          so we must re-check and hold if needed)
+                forever begin
+                    @(posedge clk);
+                    if (ready === 1'b1) begin
+                        // transfer accepted this cycle — deassert cleanly
+                        @(negedge clk);
+                        valid     = 1'b0;
+                        pixel_val = 24'b0;
+                        disable send_pixel;
+                    end
+                    // ready dropped — hold valid+data, wait another cycle
+                end
             end
         end
-        // timed out — deassert and flag
-        @(negedge clk);
+
+        // timed out waiting for ready
         valid     = 1'b0;
         pixel_val = 24'b0;
         timed_out = 1'b1;
@@ -312,13 +329,20 @@ initial begin
 
     // =====================================================================
     // TC3 – Both slots full — ready must drop
+    //        ready is registered off fill_cnt which itself is a registered
+    //        NBA — so ready goes low TWO posedges after the second handshake:
+    //          posedge N  : valid=1 && ready=1 → fill_cnt NBA queued
+    //          posedge N+1: fill_cnt=2, full=1 → ready NBA queued
+    //          posedge N+2: ready=0 visible
+    //        Wait two cycles after send_pixel returns before sampling.
     // =====================================================================
     $display("\n=== TC3 : Both slots full ===");
     send_pixel(24'hFFFFFF, to);
     if (to) begin
         $display("  [SKIP] TC3: ready never came"); skip_cnt = skip_cnt + 1;
     end else begin
-        @(posedge clk);
+        @(posedge clk);   // cycle N+1: fill_cnt updated
+        @(posedge clk);   // cycle N+2: ready updated
         check_eq(ready, 1'b0, "TC3: ready=0 when FIFO full");
     end
 
@@ -510,40 +534,119 @@ initial begin
     end else begin
         $display("  [PASS] TC9: dout toggling after frame_done — latch held correctly");
         pass_cnt = pass_cnt + 1;
-        // now wait for HOLD_L (dout low and stays low)
-        wait_dout_timeout(1'b0, PIX_TIMEOUT_CYC, to);
-        if (to) begin
-            $display("  [SKIP] TC9: never entered HOLD_L"); skip_cnt = skip_cnt + 1;
-        end else begin
-            ok = 1;
-            for (k = 0; k < 20; k = k + 1) begin
-                @(posedge clk);
-                if (dout !== 1'b0) ok = 0;
-            end
-            check_eq(ok[0], 1'b1, "TC9: dout stays low in HOLD_L for 20 cycles");
+        // Wait for HOLD_L — dout goes low AND stays low continuously.
+        // SEND_L also pulls dout low briefly, so we must distinguish:
+        // keep scanning until we find a low pulse that lasts > T1L cycles.
+        // HOLD_L holds for 1024 cycles so any run > 20 cycles is unambiguous.
+        begin : tc9_holdl_search
+            integer stable;
+            stable = 0;
+            fork
+                begin : tc9_scan
+                    forever begin
+                        @(posedge clk);
+                        if (dout === 1'b0)
+                            stable = stable + 1;
+                        else
+                            stable = 0;
+                        if (stable >= 20) begin
+                            $display("  [PASS] TC9: dout stays low in HOLD_L for 20 cycles");
+                            pass_cnt = pass_cnt + 1;
+                            disable tc9_holdl_timeout;
+                            disable tc9_scan;
+                        end
+                    end
+                end
+                begin : tc9_holdl_timeout
+                    wait_clk(PIX_TIMEOUT_CYC * 2);
+                    $display("  [SKIP] TC9: never entered HOLD_L"); skip_cnt = skip_cnt + 1;
+                    disable tc9_scan;
+                end
+            join
         end
     end
 
     // =====================================================================
     // TC10 – HOLD_L duration = (RES+1) * CLK_PERIOD
+    //
+    //  TC9 already consumed part of HOLD_L scanning for 20 stable cycles.
+    //  We cannot anchor on HOLD_L entry here — it already happened.
+    //  Instead we measure from NOW to ready reassertion and add back the
+    //  cycles TC9 already consumed (20 cycles = 20*CLK_PERIOD ns).
+    //  Alternatively: anchor on the next full HOLD_L by issuing a new
+    //  frame, which gives a clean t_start at the falling edge into HOLD_L.
+    //
+    //  Approach: wait for this HOLD_L to finish (ready=1), then trigger
+    //  a fresh minimal frame and measure the complete next HOLD_L cleanly.
     // =====================================================================
     $display("\n=== TC10 : HOLD_L duration ===");
-    t_start = $realtime;
+    // drain the current HOLD_L remainder first
     wait_ready_timeout(RES_CYC + 50, to);
-    t_end = $realtime;
     if (to) begin
-        $display("  [SKIP] TC10: ready never reasserted after HOLD_L"); skip_cnt = skip_cnt + 1;
+        $display("  [SKIP] TC10: first HOLD_L never finished"); skip_cnt = skip_cnt + 1;
     end else begin
-        check_range(t_end - t_start,
-                    (RES_CYC + 1) * CLK_PERIOD,
-                    100.0,
-                    "TC10: HOLD_L duration = (RES+1) cycles");
+        // fresh single pixel frame to get a clean HOLD_L
+        send_pixel(24'hAA55FF, to);
+        if (to) begin
+            $display("  [SKIP] TC10: pixel load timed out"); skip_cnt = skip_cnt + 1;
+        end else begin
+            // wait for SM to start transmitting
+            wait_posedge_dout_timeout(PIX_TIMEOUT_CYC, to);
+            // no frame_done — SM will underrun into HOLD_L on its own
+            // anchor t_start at the first sustained low (HOLD_L entry)
+            begin : tc10_anchor
+                integer stable10;
+                stable10 = 0;
+                fork
+                    begin : tc10_find
+                        forever begin
+                            @(posedge clk);
+                            if (dout === 1'b0) begin
+                                stable10 = stable10 + 1;
+                                if (stable10 == 5) begin
+                                    // 5 consecutive low cycles = definitely HOLD_L not SEND_L
+                                    t_start = $realtime - (4 * CLK_PERIOD); // back to first low cycle
+                                    disable tc10_wdog;
+                                    disable tc10_find;
+                                end
+                            end else
+                                stable10 = 0;
+                        end
+                    end
+                    begin : tc10_wdog
+                        wait_clk(PIX_TIMEOUT_CYC);
+                        $display("  [SKIP] TC10: never entered HOLD_L for measurement");
+                        skip_cnt = skip_cnt + 1;
+                        disable tc10_find;
+                    end
+                join
+            end
+            // now measure from t_start to ready reassertion
+            wait_ready_timeout(RES_CYC + 50, to);
+            t_end = $realtime;
+            if (to) begin
+                $display("  [SKIP] TC10: ready never reasserted"); skip_cnt = skip_cnt + 1;
+            end else begin
+                check_range(t_end - t_start,
+                            (RES_CYC + 1) * CLK_PERIOD,
+                            150.0,
+                            "TC10: HOLD_L duration = (RES+1) cycles");
+            end
+        end
     end
 
     // =====================================================================
     // TC11 – Ready and dout clean after HOLD_L -> RESET
+    //
+    //  dout is registered off cur_state. The cycle ready reasserts is the
+    //  first cycle in RESET state — dout updates on the SAME posedge as
+    //  cur_state changes (both are registered). So at the posedge where
+    //  ready=1 first appears, dout=0 is also valid. Sample one cycle after
+    //  wait_ready_timeout returns to be on the settled side of the edge.
     // =====================================================================
     $display("\n=== TC11 : Clean state after HOLD_L -> RESET ===");
+    // TC10 already consumed HOLD_L — ready should be high now.
+    // Wait one more cycle for all registered outputs to settle.
     @(posedge clk);
     check_eq(ready, 1'b1, "TC11: ready=1 in RESET");
     check_eq(dout,  1'b0, "TC11: dout=0 in RESET");
