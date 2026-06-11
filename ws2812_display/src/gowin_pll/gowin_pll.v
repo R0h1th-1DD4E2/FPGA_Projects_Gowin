@@ -2,7 +2,8 @@ module Gowin_PLL(
     clkin,
     clkout0,
     lock,
-    mdclk
+    mdclk,
+    reset
 );
 
 
@@ -10,6 +11,7 @@ input clkin;
 output clkout0;
 output lock;
 input mdclk;
+input reset;
 wire [7:0] mdrdo;
 wire [1:0] wMdOpc;
 wire wMdAInc;
@@ -33,7 +35,7 @@ wire pll_rst;
 
 
     PLL_INIT u_pll_init(
-        .I_RST(1'b0),
+        .I_RST(reset),
         .O_RST(pll_rst),
         .I_LOCK(pll_lock),
         .O_LOCK(lock),

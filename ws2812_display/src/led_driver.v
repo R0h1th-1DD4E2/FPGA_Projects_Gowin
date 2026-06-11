@@ -44,6 +44,7 @@ localparam RESET=2'b00, SEND_H=2'b01, SEND_L=2'b11, HOLD_L=2'b10;
 // Clock period is 20MHz => 50ns, Hence the counts
 localparam T0H = 7, T1H = 14, T0L = 16, T1L = 12, RES = 2047;
 
+
 // -------------------------
 // FIFO — full/empty flags
 // -------------------------

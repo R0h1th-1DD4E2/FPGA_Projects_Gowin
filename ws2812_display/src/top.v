@@ -1,7 +1,8 @@
 module ws2812_top(
     input  clk,
     input  reset_btn,
-    output dout
+    output dout,
+    output clk_e
 );
 
     // --------------------------------------------------
@@ -23,12 +24,13 @@ module ws2812_top(
         .mdwdi   (8'b0)
     );
 
+    assign clk_e = clk_20m;
+
     // --------------------------------------------------
     // Reset
     // --------------------------------------------------
     wire rst;
-
-    assign rst = reset_btn; // | ~pll_lock;
+    assign rst = reset_btn;
 
     // --------------------------------------------------
     // Driver interface
@@ -40,22 +42,100 @@ module ws2812_top(
     wire ready;
 
     // --------------------------------------------------
+    // Smooth color wheel
+    // --------------------------------------------------
+    reg [17:0] color_cnt;
+    reg [7:0]  r, g, b;
+    reg [2:0]  phase;
+
+    always @(posedge clk_20m or posedge rst) begin
+        if (rst) begin
+            color_cnt <= 18'd0;
+            phase     <= 3'd0;
+
+            r <= 8'hFF;
+            g <= 8'h00;
+            b <= 8'h00;
+        end
+        else begin
+
+            if (color_cnt == 18'd100000) begin
+                color_cnt <= 18'd0;
+
+                case (phase)
+
+                    // Red -> Yellow
+                    3'd0: begin
+                        if (g == 8'hFF)
+                            phase <= 3'd1;
+                        else
+                            g <= g + 1'b1;
+                    end
+
+                    // Yellow -> Green
+                    3'd1: begin
+                        if (r == 8'h00)
+                            phase <= 3'd2;
+                        else
+                            r <= r - 1'b1;
+                    end
+
+                    // Green -> Cyan
+                    3'd2: begin
+                        if (b == 8'hFF)
+                            phase <= 3'd3;
+                        else
+                            b <= b + 1'b1;
+                    end
+
+                    // Cyan -> Blue
+                    3'd3: begin
+                        if (g == 8'h00)
+                            phase <= 3'd4;
+                        else
+                            g <= g - 1'b1;
+                    end
+
+                    // Blue -> Magenta
+                    3'd4: begin
+                        if (r == 8'hFF)
+                            phase <= 3'd5;
+                        else
+                            r <= r + 1'b1;
+                    end
+
+                    // Magenta -> Red
+                    3'd5: begin
+                        if (b == 8'h00)
+                            phase <= 3'd0;
+                        else
+                            b <= b - 1'b1;
+                    end
+
+                endcase
+            end
+            else begin
+                color_cnt <= color_cnt + 1'b1;
+            end
+        end
+    end
+
+    // --------------------------------------------------
     // Test pattern FSM
     // --------------------------------------------------
-    localparam IDLE   = 3'd0;
-    localparam PIX0   = 3'd1;
-    localparam PIX1   = 3'd2;
-    localparam DONE   = 3'd3;
-    localparam WAIT_R = 3'd4;
+    localparam IDLE   = 2'd0;
+    localparam PIXEL  = 2'd1;
+    localparam DONE   = 2'd2;
+    localparam WAIT_R = 2'd3;
 
-    reg [2:0] state;
+    reg [1:0] state;
 
     always @(posedge clk_20m or posedge rst) begin
         if (rst) begin
             state      <= IDLE;
             valid      <= 1'b0;
             frame_done <= 1'b0;
-            pixel_val  <= 24'h0;
+            pixel_val  <= 24'h000000;
         end
         else begin
 
@@ -64,50 +144,43 @@ module ws2812_top(
 
             case(state)
 
-                //--------------------------------------------------
-                // wait until driver ready
-                //--------------------------------------------------
+                //------------------------------------------
+                // Wait until driver ready
+                //------------------------------------------
                 IDLE: begin
                     if (ready)
-                        state <= PIX0;
+                        state <= PIXEL;
                 end
 
-                //--------------------------------------------------
-                // LED0 = Green
-                //--------------------------------------------------
-                PIX0: begin
+                //------------------------------------------
+                // Send color wheel value
+                //------------------------------------------
+                PIXEL: begin
                     valid     <= 1'b1;
-                    pixel_val <= 24'h200000; // GRB
-
-                    if (ready)
-                        state <= PIX1;
-                end
-
-                //--------------------------------------------------
-                // LED1 = Red
-                //--------------------------------------------------
-                PIX1: begin
-                    valid     <= 1'b1;
-                    pixel_val <= 24'h002000; // GRB
+                    pixel_val <= {g, r, b}; // GRB format
 
                     if (ready)
                         state <= DONE;
                 end
 
-                //--------------------------------------------------
-                // end of frame
-                //--------------------------------------------------
+                //------------------------------------------
+                // End frame
+                //------------------------------------------
                 DONE: begin
                     frame_done <= 1'b1;
                     state <= WAIT_R;
                 end
 
-                //--------------------------------------------------
-                // wait for driver to finish reset pulse
-                //--------------------------------------------------
+                //------------------------------------------
+                // Wait for reset pulse completion
+                //------------------------------------------
                 WAIT_R: begin
                     if (ready)
-                        state <= PIX0;
+                        state <= PIXEL;
+                end
+
+                default: begin
+                    state <= IDLE;
                 end
 
             endcase

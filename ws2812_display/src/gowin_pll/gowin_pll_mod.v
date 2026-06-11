@@ -5,7 +5,7 @@
 //Part Number: GW5A-LV25MG121NC1/I0
 //Device: GW5A-25
 //Device Version: A
-//Created Time: Tue May 26 00:15:01 2026
+//Created Time: Thu Jun 11 21:10:13 2026
 
 module Gowin_PLL_MOD (lock, clkout0, mdrdo, clkin, reset, mdclk, mdopc, mdainc, mdwdi);
 
@@ -104,8 +104,8 @@ defparam PLLA_inst.CLK5_OUT_SEL = 1'b0;
 defparam PLLA_inst.CLK6_IN_SEL = 1'b0;
 defparam PLLA_inst.CLK6_OUT_SEL = 1'b0;
 defparam PLLA_inst.DYN_DPA_EN = "FALSE";
-defparam PLLA_inst.CLKOUT0_PE_COARSE = 0;
-defparam PLLA_inst.CLKOUT0_PE_FINE = 0;
+defparam PLLA_inst.CLKOUT0_PE_COARSE = 30;
+defparam PLLA_inst.CLKOUT0_PE_FINE = 5;
 defparam PLLA_inst.CLKOUT1_PE_COARSE = 0;
 defparam PLLA_inst.CLKOUT1_PE_FINE = 0;
 defparam PLLA_inst.CLKOUT2_PE_COARSE = 0;
